@@ -7,8 +7,10 @@ O escritório FRL guarda o acervo documental de ~439 empresas clientes (contrato
 - indexa esse acervo (sem nunca modificá-lo — a pasta original continua sendo a fonte da verdade);
 - permite buscar por empresa, CNPJ ou conteúdo do documento;
 - exibe os documentos direto no navegador (o PDF renderiza nativamente, sem precisar baixar);
-- registra quem acessou o quê e quando — importante porque o acervo inclui certificados digitais (e-CNPJ/e-CPF) e dados fiscais sensíveis;
+- registra quem acessou o quê e quando — importante porque o acervo inclui dados fiscais sensíveis;
 - sinaliza, no futuro, pendências como certidão desatualizada.
+
+**Fora de escopo, por decisão explícita do usuário (2026-09-25):** certificados digitais (`.pfx`/`.p12`) — já existe outra aplicação do escritório dedicada a isso — e as pastas de controle interno com prefixo `@` (`@DCTFWEB`, `@IRPF`, etc.), que não são organizadas por empresa.
 
 Referência de inspiração (ver conversa de 2026-09-25): arquitetura de indexação read-only do **PhotoPrism** (nunca reorganiza os arquivos originais) + modelo de permissões/auditoria do **Mayan EDMS**. Funcionalidade de OCR/full-text inspirada em **Paperless-ngx** e **Docspell**, mas nenhum código dessas ferramentas é reaproveitado — são só referência de produto.
 
@@ -16,12 +18,12 @@ Referência de inspiração (ver conversa de 2026-09-25): arquitetura de indexa�
 
 Levantamento feito diretamente na pasta local de origem dos documentos (caminho real fica só em `.env`, nunca neste arquivo — ver `SEGURANCA.md`):
 
-- **439 pastas de primeiro nível**, a grande maioria = uma empresa cliente (nome da pasta = razão social, ex: `EMPRESA EXEMPLO TRANSPORTES LTDA`). Um punhado de pastas são controle interno do escritório, não cliente: `@CERTIFICADOS DIGITAIS`, `@CONTROLE CND`, `@DCTFWEB`, `@DOCUMENTOS DEP. PESSOAL`, `@IRPF`, `@JURÍDICO` (prefixo `@` parece ser a convenção do próprio escritório pra separar isso — **o indexer deve tratar pastas com prefixo `@` como categoria "controle interno", não como empresa cliente**).
+- **439 pastas de primeiro nível**, a grande maioria = uma empresa cliente (nome da pasta = razão social, ex: `EMPRESA EXEMPLO TRANSPORTES LTDA`). **9 pastas** são controle interno do escritório, não cliente: `@CERTIFICADOS DIGITAIS`, `@CONTROLE CND`, `@DCTFWEB`, `@DOCUMENTOS DEP. PESSOAL`, `@IRPF`, `@JURÍDICO` e mais 3 (prefixo `@`). **Decisão final: essas 9 pastas são ignoradas por completo pelo indexer** — juntas somam ~23.900 arquivos (a maioria em `@DCTFWEB`, ~16.900, e `@IRPF`, ~5.900), então o indexer processa de fato ~25 mil arquivos, não os ~49 mil totais.
 - Dentro de uma pasta de empresa típica: Cartão SINTEGRA, Certidão de Baixa, CNPJ, DEFIS (declaração + recibo, por ano), Imposto de Renda, Inscrição Estadual, Contrato Social, Certidões, fotos, orçamentos avulsos.
 - **48.961 arquivos, ~12 GB.** Distribuição por extensão (top): 42.069 PDF (86%), 2.391 `.doc`, 656 `.db`, 626 `.docx`, 610 `.dec`, 601 `.rec`, 363 `.jpg`, 341 `.pfx`, 271 `.frm`, 248 `.dbk`, 142 `.jpeg`, 73 `.xlsx`, 73 `.xls`, 71 `.txt`, 56 `.gif`, 53 `.zip`, 43 `.png`, 37 `.p12`, 20 `.lnk`, 16 `.bmp`.
-- **`.pfx`/`.p12` (378 arquivos)**: certificados digitais e-CNPJ/e-CPF — contêm chave privada. Ver `SEGURANCA.md` para o tratamento obrigatório.
-- **`.db`/`.dec`/`.rec`/`.frm`/`.dbk` (~2.400 arquivos)**: sobra de um sistema legado (uma pasta menciona "Domínio Web", sistema contábil conhecido no Brasil) — não é documento de cliente, o indexer deve ignorar essas extensões.
-- **`.lnk` (20 arquivos)**: atalhos, provavelmente quebrados — ignorar.
+- **`.pfx`/`.p12` (378 arquivos)**: certificados digitais e-CNPJ/e-CPF. **Decisão final: fora de escopo deste projeto** — o escritório já tem outra aplicação dedicada a isso. O indexer ignora essas extensões completamente.
+- **`.db`/`.dec`/`.rec`/`.frm`/`.dbk` (~2.400 arquivos)**: sobra de um sistema legado (uma pasta menciona "Domínio Web", sistema contábil conhecido no Brasil) — não é documento de cliente, o indexer ignora essas extensões.
+- **`.lnk` (20 arquivos)**: atalhos, provavelmente quebrados — ignorados também.
 
 ## 2. Escopo por fases
 
@@ -33,19 +35,18 @@ Repositório criado, documentação (`CLAUDE.md`, este arquivo, `SEGURANCA.md`, 
 
 **Critério de avanço:** documentação revisada e aprovada pelo usuário; Go instalado na máquina de desenvolvimento.
 
-### MVP0 — Indexer (não iniciada)
+### MVP0 — Indexer (concluída em 2026-09-25)
 
 Objetivo: um comando (`go run ./cmd/painel -indexar-somente`) que varre a fonte, popula o SQLite, e pode ser rodado de novo (idempotente — reindexar não duplica registro, atualiza o que mudou e marca como removido o que sumiu da fonte).
 
-Escopo:
-- Percorrer recursivamente a fonte (`PAINEL_FONTE_DOCUMENTOS`), tratando cada pasta de primeiro nível como `Empresa` (exceto as com prefixo `@`, que viram categoria "controle interno" — decidir no início desta fase se elas entram no MVP0 ou ficam pra depois, ver seção 9).
-- Ignorar as extensões de lixo legado (`.db`, `.dec`, `.rec`, `.frm`, `.dbk`, `.lnk`) — constante centralizada, não espalhada pelo código.
-- Para `.pfx`/`.p12`: registrar só nome do arquivo, empresa e caminho — nunca ler o conteúdo binário (ver `SEGURANCA.md`).
-- Para os demais arquivos: nome, caminho relativo à fonte, tamanho, data de modificação, tipo de documento inferido do nome (regras simples baseadas em palavras-chave: "CNPJ", "Contrato Social", "Certidão", "DEFIS", "IRPF", "Alvará" — lista extensível).
-- Schema SQLite inicial em `internal/store/migrations/` (tabelas `empresas`, `documentos` no mínimo).
-- Testes de integração contra SQLite real + fixture sintética em `testdata/` (pastas de "empresa fictícia" criadas só para teste, nunca dado real).
+Escopo implementado:
+- Percorrer recursivamente a fonte (`PAINEL_FONTE_DOCUMENTOS`), tratando cada pasta de primeiro nível como `Empresa`, **pulando por completo** as com prefixo `@` (não viram empresa, não são percorridas — `internal/indexer/indexer.go`).
+- Ignorar as extensões de lixo legado e certificado digital (`.db`, `.dec`, `.rec`, `.frm`, `.dbk`, `.lnk`, `.pfx`, `.p12`) — constante centralizada em `internal/indexer/regras.go`, não espalhada pelo código.
+- Para os demais arquivos: nome, caminho relativo à fonte, tamanho, data de modificação, tipo de documento inferido primeiro pela subpasta imediata e depois por palavra-chave no nome do arquivo (`contrato_social`, `certidao`, `cnpj`, `cartao_sintegra`, `inscricao_estadual`, `defis`, `alvara`, `imposto_de_renda`, ou `outro`).
+- Schema SQLite inicial em `internal/store/migrations/0001_init.sql` (tabelas `empresas`, `documentos`), aplicado via migration runner embutido (`embed.FS`).
+- 8 testes de integração contra SQLite real (arquivo temporário) + fixture sintética em `testdata/fonte_exemplo/`, cobrindo indexação inicial, idempotência e detecção de remoção (soft-delete).
 
-**Critério de avanço:** `go test ./...` passando; rodar o indexer contra a fonte real (só leitura) e confirmar por query manual no SQLite que os números batem aproximadamente com o levantamento da seção 1 (não precisa bater exato — arquivos podem ter mudado desde 2026-09-25).
+**Critério de avanço — atingido:** `go test ./...` passando; indexer rodado contra a cópia local dos dados reais (nunca a fonte original): 430 empresas, 9 pastas `@` ignoradas, 24.042 documentos indexados, 959 ignorados — bate com o levantamento da seção 1 uma vez descontados os ~23.900 arquivos dentro das pastas `@`.
 
 ### MVP1 — Busca + painel web (read-only, sem autenticação) (não iniciada)
 
@@ -56,15 +57,14 @@ Escopo:
 - Lista de empresas com busca por nome/CNPJ.
 - Página de empresa com os documentos categorizados (pelo tipo inferido no MVP0).
 - Visualização de PDF inline (`iframe` + `http.ServeFile` a partir do caminho original — nunca copiar o arquivo).
-- Certificados digitais (`.pfx`/`.p12`) aparecem listados (nome, empresa) mas **sem link de download** — isso só chega no MVP2.
 
 **Critério de avanço:** busca funcionando por nome de empresa, CNPJ e conteúdo de PDF; navegação testada manualmente pelo usuário (Claude não tem controle de desktop nesta máquina, só valida via build/testes automatizados).
 
 ### MVP2 — Autenticação + log de auditoria (não iniciada)
 
-Objetivo: login simples (usuário/senha, hash no SQLite) e registro de acesso a documento (quem, o quê, quando). É só a partir daqui que `.pfx`/`.p12` passam a ter link de download na interface.
+Objetivo: login simples (usuário/senha, hash no SQLite) e registro de acesso a documento (quem, o quê, quando).
 
-**Critério de avanço:** log de acesso gravando de fato para cada documento aberto, incluindo certificados; sem usuário sem login conseguir chegar em nenhuma página.
+**Critério de avanço:** log de acesso gravando de fato para cada documento aberto; sem usuário sem login conseguir chegar em nenhuma página.
 
 ### V2 — Alertas e regras de negócio (não iniciada, escopo a refinar)
 
@@ -91,7 +91,7 @@ Ver `CLAUDE.md` seção "Estrutura de pastas" — mantida num único lugar para 
 
 ## 6. Segurança e conformidade
 
-Ver `SEGURANCA.md` — leitura obrigatória antes do MVP0 começar, porque a regra de "nunca ler conteúdo de `.pfx`/`.p12`" precisa estar no indexer desde a primeira versão, não como retrofit.
+Ver `SEGURANCA.md`. Certificados digitais estão fora de escopo (ver seção 0) — a superfície de risco que resta é o acervo fiscal/societário em si (CNPJ, contratos sociais, certidões), tratado com acesso restrito à rede local e, a partir do MVP2, log de auditoria.
 
 ## 7. Qualidade e processo de desenvolvimento
 
@@ -102,13 +102,12 @@ Ver `SEGURANCA.md` — leitura obrigatória antes do MVP0 começar, porque a reg
 
 ## 8. Passo a passo imediato
 
-1. Instalar Go na máquina de desenvolvimento (bloqueia MVP0 — ver "Estado atual" em `CLAUDE.md`).
-2. Rodar `go mod tidy` depois de instalado, pra confirmar que `go.mod` está correto pra versão real instalada.
-3. Começar MVP0 numa sessão dedicada (ideal: logo após `/clear`, lendo só `CLAUDE.md` + esta seção 2 deste arquivo).
+1. ~~Instalar Go na máquina de desenvolvimento.~~ Feito (Go 1.27.1, 2026-09-25).
+2. ~~Começar MVP0.~~ Feito e validado contra dados reais (ver "Estado atual" em `CLAUDE.md`).
+3. Começar MVP1 numa sessão dedicada (ideal: logo após `/clear`, lendo `CLAUDE.md` + esta seção 2 deste arquivo) — primeiro passo dessa fase é resolver a pergunta de extração de PDF abaixo.
 
-## 9. Perguntas em aberto (decidir ao longo do caminho, não bloqueiam o início do MVP0)
+## 9. Perguntas em aberto (decidir ao longo do caminho)
 
 - **Extração de texto de PDF:** chamar `pdftotext` (poppler) como processo externo (robusto, mas exige o binário instalado na máquina do escritório) vs. biblioteca pura Go (`ledongthuc/pdf`, `pdfcpu` — sem dependência externa, qualidade de extração a validar). Decidir no início do MVP1, com um teste rápido contra uma amostra real de PDFs da fonte.
-- **Pastas com prefixo `@` (controle interno):** entram no MVP0 como uma categoria separada de "empresa", ou ficam de fora até haver um caso de uso claro (ex: V2 de alertas)? Decidir no início do MVP0.
 - **Autenticação (MVP2):** usuário/senha simples own-rolled vs. alguma lib de sessão Go padrão. Decidir só ao chegar no MVP2.
 - **Deploy:** binário rodando manualmente vs. serviço Windows (`sc create` / NSSM). Decidir quando o MVP1 estiver validado pelo usuário.

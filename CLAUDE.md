@@ -16,10 +16,10 @@ A fonte real dos documentos é uma pasta fora deste repositório, num backup loc
 
 **Este projeto só LÊ dessa pasta. Nunca escreve, move, renomeia ou apaga nada nela.** Nenhuma função em `internal/indexer` ou `internal/web` deve abrir um arquivo dentro da fonte em modo de escrita. Todo metadado extraído vive só no SQLite deste projeto (`data/painel.db`, gitignored).
 
-Levantamento feito em 2026-09-25 (ver `PLANO_DE_PROJETO.md` seção 1 para a íntegra): 439 pastas de empresa, ~48.961 arquivos, ~12 GB, 86% PDF. Achados importantes que moldam a arquitetura:
-- **378 arquivos `.pfx`/`.p12`** — certificados digitais (e-CNPJ/e-CPF) com chave privada. Tratamento especial obrigatório, ver `SEGURANCA.md`.
-- **~2.400 arquivos `.db`/`.dec`/`.rec`/`.frm`/`.dbk`** — sobra de sistema legado (Domínio Web), não é documento de cliente. **Ignorar essas extensões no indexer, nunca catalogar como documento.**
-- **20 arquivos `.lnk`** — atalhos quebrados, ignorar também.
+Levantamento feito em 2026-09-25 (ver `PLANO_DE_PROJETO.md` seção 1 para a íntegra): 439 pastas de primeiro nível, ~48.961 arquivos, ~12 GB, 86% PDF. Decisões de escopo (definitivas, não é "MVP0 provisório"):
+- **9 pastas com prefixo `@`** (`@DCTFWEB`, `@IRPF`, `@CERTIFICADOS DIGITAIS`, etc.) são **ignoradas por completo** — não viram empresa, não são percorridas. Juntas somam ~23.900 arquivos (a maioria em `@DCTFWEB` e `@IRPF`), então **o indexer processa ~25 mil arquivos reais de empresa, não os ~49 mil totais** — os números batem, não é bug.
+- **`.pfx`/`.p12`** (certificado digital, chave privada) **fora de escopo deste projeto** — o escritório já tem outra aplicação dedicada a isso. O indexer ignora essas extensões, nem o nome do arquivo é catalogado.
+- **`.db`/`.dec`/`.rec`/`.frm`/`.dbk`/`.lnk`** — sobra de sistema legado (Domínio Web) ou atalho quebrado, não é documento de cliente. Ignoradas do mesmo jeito.
 
 ## Comandos essenciais
 
@@ -40,7 +40,7 @@ go run ./cmd/painel -indexar-somente
 
 Fluxo em três etapas, cada uma um pacote isolado em `internal/`:
 
-1. **Indexer** (`internal/indexer`) — varre a árvore da fonte, extrai metadados (nome da empresa a partir do nome da pasta, CNPJ quando aparece no nome do arquivo, tipo de documento por padrão de nome, tamanho, datas), grava em SQLite. Roda sob demanda ou em intervalo (a definir), nunca em resposta direta a uma requisição HTTP.
+1. **Indexer** (`internal/indexer`) — varre a árvore da fonte (pulando pastas `@...` inteiras), extrai metadados (nome da empresa a partir do nome da pasta, tipo de documento por pasta-pai/nome de arquivo, tamanho, datas), grava em SQLite via upsert idempotente (reindexar não duplica; arquivo que sumiu vira soft-delete, ver `internal/store/documentos.go`). Roda sob demanda (`-indexar-somente`) ou em intervalo (a definir no MVP1), nunca em resposta direta a uma requisição HTTP.
 2. **Store** (`internal/store`) — única camada que fala com o SQLite (schema, migrations manuais versionadas em `internal/store/migrations/`, queries). Nada fora desse pacote executa SQL direto.
 3. **Web** (`internal/web`) — handlers HTTP (`net/http` puro ou `chi`, a decidir no MVP1), templates server-side (`html/template`) + `htmx` para interatividade pontual. Sem SPA, sem build step de JS — combina com a filosofia de "binário único, sem dependência de runtime".
 
@@ -71,7 +71,7 @@ FRL_Painel_Documentos/
 └── .gitignore
 ```
 
-Só existem hoje (Fase 0): os arquivos de documentação, `go.mod`, `.gitignore`. O restante é criado à medida que cada fase do `PLANO_DE_PROJETO.md` é implementada — não criar pacotes vazios adiantado.
+Existem hoje (MVP0 concluído): `cmd/painel/`, `internal/indexer/`, `internal/store/` (com `migrations/0001_init.sql`), `testdata/fonte_exemplo/`, além da documentação. `internal/search`, `internal/web`, `internal/auth` e `web/` ainda não existem — nascem no MVP1/MVP2.
 
 ## Convenções estabelecidas
 
@@ -80,7 +80,9 @@ Só existem hoje (Fase 0): os arquivos de documentação, `go.mod`, `.gitignore`
 - **Nunca duplicar documentos**: o SQLite guarda só metadados + caminho relativo à fonte. Servir o arquivo original direto (via `http.ServeFile` com o caminho resolvido), nunca copiar PDF pra dentro do repositório ou de `data/`.
 - **Testes de integração reais para indexer e store**: sempre que uma função mexe em SQLite ou no sistema de arquivos, testar contra SQLite real (`:memory:` ou arquivo temporário) e uma árvore de arquivos sintética em `testdata/` (algumas pastas de "empresa fictícia" com PDFs de teste pequenos) — nunca testar contra a pasta de backup real. Mesmo padrão de `ContabilFRL.Tests/Infrastructure/`.
 - **Sem SPA / sem build step de frontend**: `html/template` + `htmx` quando precisar de interatividade. Justificativa: um binário só, deploy trivial numa máquina do escritório, sem Node/npm no meio.
-- **Extensões ignoradas pelo indexer**: `.db`, `.dec`, `.rec`, `.frm`, `.dbk`, `.lnk` (lixo de sistema legado, não documento de cliente) — lista deve ficar centralizada numa constante em `internal/indexer`, não espalhada.
+- **Extensões ignoradas pelo indexer**: `.db`, `.dec`, `.rec`, `.frm`, `.dbk`, `.lnk`, `.pfx`, `.p12` — centralizado em `internal/indexer/regras.go` (`extensoesIgnoradas`), não espalhar essa lista pelo código.
+- **Pastas raiz com prefixo `@` são ignoradas por completo** (`internal/indexer/indexer.go`, `prefixoIgnorado`) — nunca viram `Empresa`, o `WalkDir` nem entra nelas.
+- **Identificação de documento é por `CaminhoRelativo`**, nunca por `(nome, tamanho)` ou similar — é a única chave estável entre passadas do indexer (nomes de empresa podem ser corrigidos, tamanho de arquivo pode mudar).
 
 ## Armadilhas conhecidas (não redescobrir)
 
@@ -89,7 +91,7 @@ Nenhuma ainda — projeto começando (Fase 0). Preencher aqui conforme bugs reai
 ## Segurança — resumo (ver `SEGURANCA.md` para o checklist completo)
 
 - Roda **só na rede local do escritório**. Nunca exposto à internet, nunca atrás de um túnel/proxy público.
-- Arquivos `.pfx`/`.p12` (certificado digital): até o MVP2 existir (autenticação + log de auditoria), o indexer só registra a **existência** do arquivo (nome, empresa, caminho) — nunca lê o conteúdo binário, e a interface web nunca oferece link de download para eles. Regra dura, não flexibilizar por conveniência de UI.
+- Certificados digitais (`.pfx`/`.p12`) estão **fora do escopo deste projeto** — outra aplicação do escritório já cuida disso. O indexer nem cataloga o nome desses arquivos.
 
 ## Fluxo de trabalho entre sessões (gestão de contexto)
 
@@ -100,14 +102,15 @@ Este projeto é dividido em fases pequenas e sequenciais (ver `PLANO_DE_PROJETO.
 3. **Antes de considerar uma fase encerrada**: atualizar a seção "Estado atual" deste arquivo (o que foi feito, decisões tomadas, testes passando) e marcar a fase como concluída em `PLANO_DE_PROJETO.md`, com data. Só depois disso é seguro rodar `/clear`.
 4. Armadilhas novas descobertas no caminho entram na seção "Armadilhas conhecidas" acima, não se perdem numa conversa que vai ser limpa.
 
-## Estado atual (Fase 0 — Setup, concluída em 2026-09-25)
+## Estado atual (MVP0 — Indexer, concluído em 2026-09-25)
 
-Repositório criado, ainda sem código. O que existe:
-- `CLAUDE.md`, `PLANO_DE_PROJETO.md`, `SEGURANCA.md`, `README.md` — documentação completa e alinhada com o usuário.
-- `go.mod` (módulo `frl-painel-documentos`, `go 1.23` — **ajustar a versão para o que for de fato instalado quando o Go for configurado na máquina**).
-- `.gitignore` cobrindo binários, SQLite local, certificados e config local.
-- Levantamento real da fonte de dados feito e documentado (439 empresas, ~49k arquivos, 12 GB, achados de `.pfx`/`.p12` e lixo legado).
+**Fase 0** completa: documentação (`CLAUDE.md`, `PLANO_DE_PROJETO.md`, `SEGURANCA.md`, `README.md`), `go.mod`, `.gitignore`, `.env`/`.env.example`. Go 1.27.1 instalado (`go.mod` usa `go 1.25.0`, ajustado automaticamente pelo `go mod tidy`).
 
-**Pendência que bloqueia o início do MVP0:** Go não está instalado nesta máquina (`go version` falhou em 2026-09-25). Instalar o toolchain antes de começar o indexer.
+**MVP0 completo:**
+- `internal/store`: schema inicial (`empresas`, `documentos`) com migration versionada e embutida (`embed.FS`), upsert idempotente por `pasta_relativa`/`caminho_relativo`, soft-delete de documento ausente (`MarcarAusentesComoRemovidos`). Driver `modernc.org/sqlite` (puro Go, sem cgo — mantém o binário único).
+- `internal/indexer`: `Run(fonte, store)` varre a fonte, pula pastas `@...` inteiras, ignora extensões de certificado/lixo legado (`internal/indexer/regras.go`), infere `tipo_documento` por pasta-pai e depois por palavra-chave no nome do arquivo (`contrato_social`, `certidao`, `cnpj`, `defis`, `alvara`, `imposto_de_renda`, `cartao_sintegra`, `inscricao_estadual`, ou `outro`).
+- `cmd/painel`: binário único, carrega `.env` via `godotenv`, roda a indexação e imprime um resumo. Modo servidor web ainda não existe (fica pro MVP1).
+- **8 testes automatizados passando** (`go test ./...`), incluindo integração real contra SQLite (arquivo temporário) e uma árvore de arquivos sintética em `testdata/fonte_exemplo/` (2 empresas fictícias, 1 pasta `@` de teste, 1 `.dbk` e 1 `.pfx` de teste para confirmar que são ignorados). Cobre também idempotência (reindexar não duplica) e detecção de remoção (soft-delete).
+- **Validado contra os dados reais** (rodando sobre a cópia local, nunca a pasta original): 430 empresas indexadas, 9 pastas `@` ignoradas, 24.042 documentos indexados, 959 ignorados (lixo legado + certificado). Os ~23.900 arquivos dentro das pastas `@` (majoritariamente `@DCTFWEB` e `@IRPF`) não entram nesse total — decisão de escopo, não bug. Tempo de execução: ~3 min para a árvore inteira.
 
-**Próximo passo:** MVP0 — indexer (ver `PLANO_DE_PROJETO.md` seção 2).
+**Próximo passo:** MVP1 — extração de texto de PDF + índice FTS5 + painel web read-only (ver `PLANO_DE_PROJETO.md` seção 2). Decidir primeiro a biblioteca de extração de texto (seção 9, perguntas em aberto).

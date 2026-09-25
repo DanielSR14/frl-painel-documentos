@@ -10,9 +10,14 @@
 /data/*.db-wal
 /data/*.db-shm
 
-# nunca versionar nada que pareça certificado digital, mesmo em teste
+# nunca versionar nada que pareça certificado digital, mesmo em teste,
+# exceto a fixture sintética em testdata/ (conteúdo é texto de teste, sem
+# chave real — precisa existir no repo pra indexer_test.go funcionar em
+# outra máquina)
 *.pfx
 *.p12
+!testdata/**/*.pfx
+!testdata/**/*.p12
 
 # config local por máquina (caminho da fonte de dados, segredos)
 .env
