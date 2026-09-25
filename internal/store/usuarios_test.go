@@ -9,6 +9,73 @@ import (
 	"frl-painel-documentos/internal/store"
 )
 
+func TestRemoverUsuarioSemHistorico(t *testing.T) {
+	st := abrirBancoTeste(t)
+
+	usuarioID, err := st.CriarUsuario("pf", "hash")
+	if err != nil {
+		t.Fatalf("criar usuario: %v", err)
+	}
+	if err := st.CriarSessao("token", usuarioID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("criar sessao: %v", err)
+	}
+
+	if err := st.RemoverUsuario("pf"); err != nil {
+		t.Fatalf("remover usuario: %v", err)
+	}
+
+	if _, err := st.ObterUsuarioPorNome("pf"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("esperava usuário removido (sql.ErrNoRows), veio %v", err)
+	}
+	if _, err := st.ObterSessaoValida("token"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("esperava sessão removida junto (sql.ErrNoRows), veio %v", err)
+	}
+}
+
+func TestRemoverUsuarioComHistoricoDeAuditoriaERecusado(t *testing.T) {
+	st := abrirBancoTeste(t)
+
+	usuarioID, err := st.CriarUsuario("joao", "hash")
+	if err != nil {
+		t.Fatalf("criar usuario: %v", err)
+	}
+	empresaID, err := st.UpsertEmpresa("Empresa Exemplo LTDA", "Empresa Exemplo LTDA")
+	if err != nil {
+		t.Fatalf("upsert empresa: %v", err)
+	}
+	agora := time.Now().UTC()
+	if err := st.UpsertDocumento(store.Documento{
+		EmpresaID: empresaID, NomeArquivo: "A.pdf", CaminhoRelativo: "Empresa Exemplo LTDA/A.pdf",
+		Extensao: ".pdf", TipoDocumento: "outro", TamanhoBytes: 1, ModificadoEm: agora, IndexadoEm: agora,
+	}); err != nil {
+		t.Fatalf("upsert documento: %v", err)
+	}
+	documentos, err := st.ListarDocumentosPorEmpresa(empresaID)
+	if err != nil || len(documentos) != 1 {
+		t.Fatalf("listar documentos: %v", err)
+	}
+	if err := st.RegistrarAcesso(usuarioID, documentos[0].ID); err != nil {
+		t.Fatalf("registrar acesso: %v", err)
+	}
+
+	if err := st.RemoverUsuario("joao"); err == nil {
+		t.Fatalf("esperava recusa ao remover usuário com histórico de auditoria")
+	}
+
+	if _, err := st.ObterUsuarioPorNome("joao"); err != nil {
+		t.Errorf("usuário não deveria ter sido removido: %v", err)
+	}
+}
+
+func TestRemoverUsuarioInexistente(t *testing.T) {
+	st := abrirBancoTeste(t)
+
+	err := st.RemoverUsuario("ninguem")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("esperava sql.ErrNoRows, veio %v", err)
+	}
+}
+
 func TestCriarUsuarioEObterPorNome(t *testing.T) {
 	st := abrirBancoTeste(t)
 

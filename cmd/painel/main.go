@@ -29,6 +29,7 @@ func main() {
 	pularBusca := flag.Bool("pular-busca", false, "pula a extração de texto de PDF (só reindexa metadados) — útil pra iterar rápido em desenvolvimento")
 	criarUsuario := flag.String("criar-usuario", "", "cria um usuário novo com o nome dado (pede a senha interativamente) e sai, sem indexar nem subir o servidor")
 	alterarSenha := flag.String("alterar-senha", "", "altera a senha de um usuário já existente (pede a senha nova interativamente) e sai")
+	removerUsuario := flag.String("remover-usuario", "", "remove um usuário (só permitido se ele nunca tiver acessado nenhum documento — protege o log de auditoria) e sai")
 	flag.Parse()
 
 	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -55,6 +56,13 @@ func main() {
 	}
 	if *alterarSenha != "" {
 		rodarAlterarSenha(st, *alterarSenha)
+		return
+	}
+	if *removerUsuario != "" {
+		if err := st.RemoverUsuario(*removerUsuario); err != nil {
+			log.Fatalf("remover usuário: %v", err)
+		}
+		fmt.Printf("Usuário %q removido.\n", *removerUsuario)
 		return
 	}
 
