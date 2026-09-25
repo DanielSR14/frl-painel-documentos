@@ -21,6 +21,10 @@ testdata/          fixtures sintéticas para teste (nunca dado real)
 
 ## Rodando localmente
 
+Jeito mais simples: dar duplo clique em **`START.BAT`** (ou rodar pelo terminal). Ele copia o `.env.example` pra `.env` na primeira vez (e abre pra você editar o caminho da fonte), compila e sobe o painel em `http://127.0.0.1:8080`.
+
+Manualmente:
+
 ```powershell
 go build ./...
 go test ./...
