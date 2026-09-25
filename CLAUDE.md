@@ -32,37 +32,42 @@ go test ./...
 copy .env.example .env
 # depois editar PAINEL_FONTE_DOCUMENTOS dentro de .env
 
-# rodar o indexer (lê PAINEL_FONTE_DOCUMENTOS do .env automaticamente)
+# indexar + extrair texto e sair, sem subir o servidor (lê .env automaticamente)
 go run ./cmd/painel -indexar-somente
+
+# indexar + extrair texto + subir o painel web (padrão, sem -indexar-somente)
+# fica em http://127.0.0.1:8080 (endereço configurável via PAINEL_ENDERECO no .env)
+go run ./cmd/painel
+
+# reindexar só metadados, pulando a extração de texto (mais rápido pra iterar)
+go run ./cmd/painel -indexar-somente -pular-busca
 ```
 
 ## Arquitetura
 
 Fluxo em três etapas, cada uma um pacote isolado em `internal/`:
 
-1. **Indexer** (`internal/indexer`) — varre a árvore da fonte (pulando pastas `@...` inteiras), extrai metadados (nome da empresa a partir do nome da pasta, tipo de documento por pasta-pai/nome de arquivo, tamanho, datas), grava em SQLite via upsert idempotente (reindexar não duplica; arquivo que sumiu vira soft-delete, ver `internal/store/documentos.go`). Roda sob demanda (`-indexar-somente`) ou em intervalo (a definir no MVP1), nunca em resposta direta a uma requisição HTTP.
-2. **Store** (`internal/store`) — única camada que fala com o SQLite (schema, migrations manuais versionadas em `internal/store/migrations/`, queries). Nada fora desse pacote executa SQL direto.
-3. **Web** (`internal/web`) — handlers HTTP (`net/http` puro ou `chi`, a decidir no MVP1), templates server-side (`html/template`) + `htmx` para interatividade pontual. Sem SPA, sem build step de JS — combina com a filosofia de "binário único, sem dependência de runtime".
+1. **Indexer** (`internal/indexer`) — varre a árvore da fonte (pulando pastas `@...` inteiras), extrai metadados (nome da empresa a partir do nome da pasta, tipo de documento por pasta-pai/nome de arquivo, tamanho, datas), grava em SQLite via upsert idempotente (reindexar não duplica; arquivo que sumiu vira soft-delete, ver `internal/store/documentos.go`). Roda via `go run ./cmd/painel` (com ou sem `-indexar-somente`), nunca em resposta direta a uma requisição HTTP.
+2. **Store** (`internal/store`) — única camada que fala com o SQLite (schema, migrations versionadas e embutidas via `embed.FS` em `internal/store/migrations/`, queries, índice FTS5 em `internal/store/busca.go`). Nada fora desse pacote executa SQL direto.
+3. **Search** (`internal/search`) — extrai texto de PDF (`github.com/ledongthuc/pdf`, puro Go) e grava no índice FTS5 via `store`. `IndexarPendentes` roda em paralelo (worker pool) só sobre documentos ainda não indexados para busca (`store.DocumentosPdfPendentesDeBusca`) — não reprocessa tudo a cada execução.
+4. **Web** (`internal/web`) — handlers HTTP (`net/http` puro, `ServeMux` com padrões de método+path do Go 1.22+), templates server-side embutidos via `embed.FS` (`internal/web/templates/*.html`). Sem SPA, sem build step de JS, sem framework — combina com a filosofia de "binário único, sem dependência de runtime". Ainda sem autenticação (MVP2).
 
-A partir do MVP2 (autenticação + auditoria) entra um quarto pacote, `internal/auth`, responsável por login, sessão e o log de acesso a documentos.
+A partir do MVP2 (autenticação + auditoria) entra um quinto pacote, `internal/auth`, responsável por login, sessão e o log de acesso a documentos.
 
-## Estrutura de pastas (planejada — pacotes nascem conforme cada fase é implementada)
+## Estrutura de pastas
 
 ```
 FRL_Painel_Documentos/
 ├── cmd/
-│   └── painel/              main.go — ponto de entrada único do binário
+│   └── painel/                  main.go — ponto de entrada único do binário
 ├── internal/
-│   ├── indexer/             varredura da fonte + extração de metadados
-│   ├── store/                acesso a SQLite (schema, migrations, queries)
-│   ├── search/               extração de texto de PDF + índice FTS5 (a partir do MVP1)
-│   ├── web/                  handlers HTTP, templates, servir PDF inline
-│   └── auth/                 login, sessão, log de auditoria (a partir do MVP2)
-├── web/
-│   ├── templates/            HTML (html/template)
-│   └── static/                CSS/JS estático (sem build step)
-├── testdata/                  fixtures sintéticas para teste do indexer (nunca dado real de cliente)
-├── data/                       SQLite do projeto (gitignored) — nunca os documentos originais
+│   ├── indexer/                  varredura da fonte + extração de metadados
+│   ├── store/                     acesso a SQLite (schema, migrations, queries, FTS5)
+│   ├── search/                    extração de texto de PDF + orquestração da indexação de busca
+│   ├── web/                       handlers HTTP + templates (embutidos, internal/web/templates/)
+│   └── auth/                      login, sessão, log de auditoria (a partir do MVP2 — não existe ainda)
+├── testdata/                       fixtures sintéticas para teste (nunca dado real de cliente)
+├── data/                            SQLite do projeto (gitignored) — nunca os documentos originais
 ├── CLAUDE.md
 ├── PLANO_DE_PROJETO.md
 ├── SEGURANCA.md
@@ -86,7 +91,8 @@ Existem hoje (MVP0 concluído): `cmd/painel/`, `internal/indexer/`, `internal/st
 
 ## Armadilhas conhecidas (não redescobrir)
 
-Nenhuma ainda — projeto começando (Fase 0). Preencher aqui conforme bugs reais forem encontrados e corrigidos, sempre com data, igual ao padrão de `APP_Contabil_FRL_Clientes`.
+1. **`github.com/ledongthuc/pdf` pode dar `panic`, não só devolver `error`, ao processar um PDF real malformado** (descoberto rodando `search.IndexarPendentes` contra os ~24 mil PDFs reais em 2026-09-25 — `panic: loading {5 0}: found {4 0}`, dentro de `Reader.NumPage` → `Value.Key` → `resolve`). Um arquivo problemático não pode derrubar o lote inteiro. **Toda chamada a `ExtrairTexto` dentro de um processamento em lote precisa passar por `recover()`** — já feito em `internal/search/orquestrador.go` (`extrairComRecuperacao`). Se algum código novo chamar `search.ExtrairTexto` fora desse orquestrador (ex: um handler HTTP futuro que extraia sob demanda), replicar o mesmo `recover()`, não assumir que a função só retorna erro normal.
+2. **PDFs de CNPJ emitidos pela Receita Federal têm uma fonte com codificação que nenhum extrator de texto decodifica corretamente** (testado com `pdftotext`/xpdf e com `ledongthuc/pdf` — os dois produzem texto ilegível pro mesmo tipo de arquivo). Não é bug deste projeto, é uma limitação do PDF de origem. Efeito prático: a busca por CNPJ via conteúdo de documento não vai funcionar bem justamente no documento onde o CNPJ é mais autoritativo — o nome da pasta/empresa continua sendo o caminho confiável de busca por enquanto.
 
 ## Segurança — resumo (ver `SEGURANCA.md` para o checklist completo)
 
@@ -102,15 +108,22 @@ Este projeto é dividido em fases pequenas e sequenciais (ver `PLANO_DE_PROJETO.
 3. **Antes de considerar uma fase encerrada**: atualizar a seção "Estado atual" deste arquivo (o que foi feito, decisões tomadas, testes passando) e marcar a fase como concluída em `PLANO_DE_PROJETO.md`, com data. Só depois disso é seguro rodar `/clear`.
 4. Armadilhas novas descobertas no caminho entram na seção "Armadilhas conhecidas" acima, não se perdem numa conversa que vai ser limpa.
 
-## Estado atual (MVP0 — Indexer, concluído em 2026-09-25)
+## Estado atual (MVP1 — Busca + painel web, implementação concluída em 2026-09-25)
 
-**Fase 0** completa: documentação (`CLAUDE.md`, `PLANO_DE_PROJETO.md`, `SEGURANCA.md`, `README.md`), `go.mod`, `.gitignore`, `.env`/`.env.example`. Go 1.27.1 instalado (`go.mod` usa `go 1.25.0`, ajustado automaticamente pelo `go mod tidy`).
+**Fase 0** completa: documentação, `go.mod`, `.gitignore`, `.env`/`.env.example`. Go 1.27.1 instalado.
 
-**MVP0 completo:**
-- `internal/store`: schema inicial (`empresas`, `documentos`) com migration versionada e embutida (`embed.FS`), upsert idempotente por `pasta_relativa`/`caminho_relativo`, soft-delete de documento ausente (`MarcarAusentesComoRemovidos`). Driver `modernc.org/sqlite` (puro Go, sem cgo — mantém o binário único).
-- `internal/indexer`: `Run(fonte, store)` varre a fonte, pula pastas `@...` inteiras, ignora extensões de certificado/lixo legado (`internal/indexer/regras.go`), infere `tipo_documento` por pasta-pai e depois por palavra-chave no nome do arquivo (`contrato_social`, `certidao`, `cnpj`, `defis`, `alvara`, `imposto_de_renda`, `cartao_sintegra`, `inscricao_estadual`, ou `outro`).
-- `cmd/painel`: binário único, carrega `.env` via `godotenv`, roda a indexação e imprime um resumo. Modo servidor web ainda não existe (fica pro MVP1).
-- **8 testes automatizados passando** (`go test ./...`), incluindo integração real contra SQLite (arquivo temporário) e uma árvore de arquivos sintética em `testdata/fonte_exemplo/` (2 empresas fictícias, 1 pasta `@` de teste, 1 `.dbk` e 1 `.pfx` de teste para confirmar que são ignorados). Cobre também idempotência (reindexar não duplica) e detecção de remoção (soft-delete).
-- **Validado contra os dados reais** (rodando sobre a cópia local, nunca a pasta original): 430 empresas indexadas, 9 pastas `@` ignoradas, 24.042 documentos indexados, 959 ignorados (lixo legado + certificado). Os ~23.900 arquivos dentro das pastas `@` (majoritariamente `@DCTFWEB` e `@IRPF`) não entram nesse total — decisão de escopo, não bug. Tempo de execução: ~3 min para a árvore inteira.
+**MVP0 completo** (indexer de metadados): `internal/store` (schema `empresas`/`documentos`, migrations embutidas, upsert idempotente, soft-delete) + `internal/indexer` (varredura, pula `@...`, ignora certificado/lixo legado, infere `tipo_documento`). Ver histórico de commits pra detalhe — não repetir aqui pra manter este arquivo enxuto.
 
-**Próximo passo:** MVP1 — extração de texto de PDF + índice FTS5 + painel web read-only (ver `PLANO_DE_PROJETO.md` seção 2). Decidir primeiro a biblioteca de extração de texto (seção 9, perguntas em aberto).
+**MVP1 completo:**
+- `internal/search`: `ExtrairTexto` (via `github.com/ledongthuc/pdf`, puro Go) + `IndexarPendentes` (orquestração paralela, incremental, com callback de progresso — ver Armadilha #1 sobre o `recover()` obrigatório).
+- `internal/store/busca.go`: índice FTS5 (`documentos_busca`, migration `0002_busca_fts.sql`), `Buscar`, `BuscarEmpresasPorNome`, `ObterDocumento`/`ObterEmpresa`.
+- `internal/web`: painel HTTP completo (`/`, `/empresas/{id}`, `/busca`, `/documentos/{id}/arquivo`), templates embutidos, sem autenticação (por enquanto só rede local).
+- `cmd/painel`: por padrão indexa metadados + extrai texto + sobe o servidor em `127.0.0.1:8080`. Flags `-indexar-somente` e `-pular-busca` disponíveis.
+- **21 testes automatizados passando** (`go test ./...`) em 4 pacotes, incluindo os 5 handlers HTTP principais e uma regressão específica pro panic da lib de PDF (`internal/search/orquestrador_test.go`).
+- **Validado de ponta a ponta contra os dados reais** (cópia local): indexação de metadados (430 empresas, 24.042 documentos) + extração de texto de 20.215 PDFs (16.378 com texto, 1.153 sem texto/escaneado, 2.684 erros — não investigado a fundo, não bloqueia) rodando sem crashar, em ~13min30s no total. Servidor subido de verdade e testado via `curl`: lista de empresas, página de empresa com documentos agrupados por tipo, busca por nome e por conteúdo, download de PDF real com `Content-Type` correto — todos funcionando.
+
+**Pendência real:** a extração de texto de 20 mil PDFs demora ~13 minutos numa execução completa (aceitável pra um job batch periódico, mas incremental nas próximas execuções — só reprocessa o que for novo). Os 2.684 erros de extração não foram categorizados um a um; se isso importar no futuro, seria um bom próximo passo de investigação, não um bloqueio de fase.
+
+**Falta pro MVP1 ser considerado 100% fechado:** o usuário abrir o painel no navegador e navegar de verdade (Claude só validou via `curl`, não tem controle de desktop nesta máquina).
+
+**Próximo passo:** MVP2 — autenticação + log de auditoria (ver `PLANO_DE_PROJETO.md` seção 2).

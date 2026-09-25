@@ -1,0 +1,16 @@
+<a class="voltar" href="/">&larr; Todas as empresas</a>
+<h1>{{.Empresa.Nome}}</h1>
+{{if .GruposDocumentos}}
+  {{range .GruposDocumentos}}
+  <div class="grupo-tipo">
+    <h3>{{.Tipo}} ({{len .Documentos}})</h3>
+    {{range .Documentos}}
+    <div class="doc-item">
+      <a href="/documentos/{{.ID}}/arquivo" target="_blank" rel="noopener">{{.NomeArquivo}}</a>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+{{else}}
+<p class="vazio">Nenhum documento encontrado para esta empresa.</p>
+{{end}}

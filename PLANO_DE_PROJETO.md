@@ -48,17 +48,21 @@ Escopo implementado:
 
 **Critério de avanço — atingido:** `go test ./...` passando; indexer rodado contra a cópia local dos dados reais (nunca a fonte original): 430 empresas, 9 pastas `@` ignoradas, 24.042 documentos indexados, 959 ignorados — bate com o levantamento da seção 1 uma vez descontados os ~23.900 arquivos dentro das pastas `@`.
 
-### MVP1 — Busca + painel web (read-only, sem autenticação) (não iniciada)
+### MVP1 — Busca + painel web (read-only, sem autenticação) (implementação concluída em 2026-09-25, validação manual do usuário pendente)
 
 Objetivo: interface web local pra listar empresas, buscar e visualizar documentos, ainda sem login (só roda em rede local, ver `SEGURANCA.md`).
 
-Escopo:
-- Extração de texto de PDF (decidir a biblioteca/abordagem nesta fase, ver pergunta em aberto na seção 9) + índice FTS5 no SQLite.
-- Lista de empresas com busca por nome/CNPJ.
-- Página de empresa com os documentos categorizados (pelo tipo inferido no MVP0).
-- Visualização de PDF inline (`iframe` + `http.ServeFile` a partir do caminho original — nunca copiar o arquivo).
+Escopo implementado:
+- Extração de texto de PDF via `github.com/ledongthuc/pdf` (puro Go, decisão final — ver seção 9) + índice FTS5 no SQLite (`internal/store/busca.go`). Processamento paralelo e incremental (`internal/search.IndexarPendentes`, só processa PDF ainda sem entrada no índice).
+- `GET /` — lista de empresas.
+- `GET /empresas/{id}` — documentos da empresa, agrupados por tipo.
+- `GET /busca?q=` — busca por nome de empresa (`LIKE`) e por conteúdo de documento (frase literal via FTS5), com trecho de contexto.
+- `GET /documentos/{id}/arquivo` — serve o arquivo original inline (`http.ServeFile`, com checagem defensiva de path traversal), nunca copia o arquivo.
+- 5 testes de integração (`internal/web/web_test.go`) cobrindo listagem, detalhe, 404, busca por conteúdo e download.
 
-**Critério de avanço:** busca funcionando por nome de empresa, CNPJ e conteúdo de PDF; navegação testada manualmente pelo usuário (Claude não tem controle de desktop nesta máquina, só valida via build/testes automatizados).
+**Limitação conhecida, não é bug:** busca por CNPJ via conteúdo não funciona bem porque o PDF de CNPJ da Receita Federal tem uma fonte com codificação que nenhum extrator decodifica (ver `CLAUDE.md`, Armadilhas conhecidas #2). Busca por nome de empresa continua sendo o caminho confiável.
+
+**Critério de avanço:** `go test ./...` passando (feito); indexação completa rodada contra a cópia local dos dados reais sem crashar (feito, após corrigir a Armadilha #1 — panic da lib de PDF); **falta**: o usuário abrir o painel no navegador e navegar de verdade (Claude não tem controle de desktop nesta máquina).
 
 ### MVP2 — Autenticação + log de auditoria (não iniciada)
 
@@ -108,6 +112,6 @@ Ver `SEGURANCA.md`. Certificados digitais estão fora de escopo (ver seção 0) 
 
 ## 9. Perguntas em aberto (decidir ao longo do caminho)
 
-- **Extração de texto de PDF:** chamar `pdftotext` (poppler) como processo externo (robusto, mas exige o binário instalado na máquina do escritório) vs. biblioteca pura Go (`ledongthuc/pdf`, `pdfcpu` — sem dependência externa, qualidade de extração a validar). Decidir no início do MVP1, com um teste rápido contra uma amostra real de PDFs da fonte.
+- ~~**Extração de texto de PDF:**~~ **Decidido em 2026-09-25: `github.com/ledongthuc/pdf`** (puro Go). Testado empiricamente contra amostras reais junto com `pdftotext` (xpdf, o único disponível nesta máquina — vem do Git for Windows, não seria garantido existir na máquina de produção do escritório): os dois extraem texto perfeitamente de PDF "normal" (ex: recibo DEFIS, com acentuação correta), e os dois falham igualmente no PDF de CNPJ da Receita Federal (fonte com codificação quebrada — não é diferença de qualidade entre as ferramentas). Como o resultado é equivalente, venceu a opção sem dependência de binário externo, mantendo o binário único.
 - **Autenticação (MVP2):** usuário/senha simples own-rolled vs. alguma lib de sessão Go padrão. Decidir só ao chegar no MVP2.
 - **Deploy:** binário rodando manualmente vs. serviço Windows (`sc create` / NSSM). Decidir quando o MVP1 estiver validado pelo usuário.

@@ -1,0 +1,25 @@
+<h1>Resultados para &quot;{{.TermoBusca}}&quot;</h1>
+
+<h2>Empresas ({{len .Empresas}})</h2>
+{{if .Empresas}}
+<ul class="lista-empresas">
+  {{range .Empresas}}
+  <li><a href="/empresas/{{.ID}}">{{.Nome}}</a></li>
+  {{end}}
+</ul>
+{{else}}
+<p class="vazio">Nenhuma empresa encontrada.</p>
+{{end}}
+
+<h2>Documentos ({{len .Resultados}})</h2>
+{{if .Resultados}}
+{{range .Resultados}}
+<div class="doc-resultado">
+  <a href="/documentos/{{.Documento.ID}}/arquivo" target="_blank" rel="noopener">{{.Documento.NomeArquivo}}</a>
+  — <a href="/empresas/{{.Empresa.ID}}">{{.Empresa.Nome}}</a>
+  <div class="trecho">{{.Trecho}}</div>
+</div>
+{{end}}
+{{else}}
+<p class="vazio">Nenhum documento encontrado.</p>
+{{end}}

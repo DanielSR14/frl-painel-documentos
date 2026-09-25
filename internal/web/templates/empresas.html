@@ -1,0 +1,10 @@
+<h1>Empresas ({{len .Empresas}})</h1>
+{{if .Empresas}}
+<ul class="lista-empresas">
+  {{range .Empresas}}
+  <li><a href="/empresas/{{.ID}}">{{.Nome}}</a></li>
+  {{end}}
+</ul>
+{{else}}
+<p class="vazio">Nenhuma empresa indexada ainda.</p>
+{{end}}

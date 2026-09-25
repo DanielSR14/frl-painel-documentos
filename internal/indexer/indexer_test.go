@@ -47,11 +47,13 @@ func TestRunIndexaFixtureCorretamente(t *testing.T) {
 		t.Errorf("esperava 1 pasta raiz ignorada (@CONTROLE TESTE), veio %d", resumo.PastasRaizIgnoradas)
 	}
 
-	// Documentos válidos: CNPJ.pdf, Contrato.pdf, Certidao Negativa.pdf = 3.
-	// Ignorados: dados.dbk, certificado.pfx = 2. nota.txt não conta (está
-	// dentro de uma pasta raiz ignorada, o walk nem entra lá).
-	if resumo.DocumentosIndexados != 3 {
-		t.Errorf("esperava 3 documentos indexados, veio %d", resumo.DocumentosIndexados)
+	// Documentos válidos: CNPJ.pdf, Contrato.pdf, Certidao Negativa.pdf,
+	// PDF Corrompido.pdf (metadado é válido mesmo que o PDF em si seja
+	// corrompido — isso só afeta a extração de texto, não a indexação de
+	// metadados) = 4. Ignorados: dados.dbk, certificado.pfx = 2. nota.txt
+	// não conta (está dentro de uma pasta raiz ignorada, o walk nem entra lá).
+	if resumo.DocumentosIndexados != 4 {
+		t.Errorf("esperava 4 documentos indexados, veio %d", resumo.DocumentosIndexados)
 	}
 	if resumo.DocumentosIgnorados != 2 {
 		t.Errorf("esperava 2 documentos ignorados (.dbk e .pfx), veio %d", resumo.DocumentosIgnorados)
@@ -103,16 +105,16 @@ func TestRunEIdempotenteEDetectaRemocao(t *testing.T) {
 	if err != nil {
 		t.Fatalf("primeira execução: %v", err)
 	}
-	if resumo1.DocumentosIndexados != 3 {
-		t.Fatalf("esperava 3 documentos na primeira execução, veio %d", resumo1.DocumentosIndexados)
+	if resumo1.DocumentosIndexados != 4 {
+		t.Fatalf("esperava 4 documentos na primeira execução, veio %d", resumo1.DocumentosIndexados)
 	}
 
 	ativos, err := st.ContarDocumentosAtivos()
 	if err != nil {
 		t.Fatalf("contar documentos ativos: %v", err)
 	}
-	if ativos != 3 {
-		t.Fatalf("esperava 3 documentos ativos após primeira execução, veio %d", ativos)
+	if ativos != 4 {
+		t.Fatalf("esperava 4 documentos ativos após primeira execução, veio %d", ativos)
 	}
 
 	// Remove um arquivo da cópia (nunca da fixture original) e reindexa.
@@ -124,8 +126,8 @@ func TestRunEIdempotenteEDetectaRemocao(t *testing.T) {
 	if err != nil {
 		t.Fatalf("segunda execução: %v", err)
 	}
-	if resumo2.DocumentosIndexados != 2 {
-		t.Fatalf("esperava 2 documentos vistos na segunda execução, veio %d", resumo2.DocumentosIndexados)
+	if resumo2.DocumentosIndexados != 3 {
+		t.Fatalf("esperava 3 documentos vistos na segunda execução, veio %d", resumo2.DocumentosIndexados)
 	}
 	if resumo2.DocumentosRemovidos != 1 {
 		t.Fatalf("esperava 1 documento marcado como removido, veio %d", resumo2.DocumentosRemovidos)
@@ -135,8 +137,8 @@ func TestRunEIdempotenteEDetectaRemocao(t *testing.T) {
 	if err != nil {
 		t.Fatalf("contar documentos ativos após remoção: %v", err)
 	}
-	if ativos != 2 {
-		t.Fatalf("esperava 2 documentos ativos após remoção, veio %d", ativos)
+	if ativos != 3 {
+		t.Fatalf("esperava 3 documentos ativos após remoção, veio %d", ativos)
 	}
 }
 

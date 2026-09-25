@@ -43,6 +43,6 @@ Registrar no mínimo: usuário, ação (visualizou/baixou), identificador do doc
 - [x] Fase 0: este documento existe e foi lido antes de qualquer código ser escrito.
 - [x] MVP0: indexer ignora `.pfx`/`.p12` e pastas `@` por completo (coberto por teste automatizado em `internal/indexer/indexer_test.go`, não só revisão manual).
 - [x] MVP0: nenhum caminho real de máquina ou nome real de cliente em arquivo versionado (revisado antes do primeiro commit, 2026-09-25).
-- [ ] MVP1: nenhuma rota HTTP serve algo fora da lista de extensões indexadas.
-- [ ] MVP1: confirmar que o servidor só faz bind em endereço de rede local (nunca `0.0.0.0` sem revisão consciente, nunca exposto por padrão).
+- [x] MVP1: `/documentos/{id}/arquivo` só serve documentos que existem na tabela `documentos` (nunca um caminho arbitrário — resolvido a partir do `CaminhoRelativo` gravado pelo indexer, com checagem defensiva de path traversal em `internal/web/web.go`).
+- [x] MVP1: endereço padrão do servidor é `127.0.0.1:8080` (`cmd/painel/main.go`) — nunca `0.0.0.0` por padrão. Configurável via `PAINEL_ENDERECO` só se alguém decidir mudar conscientemente.
 - [ ] MVP2: login obrigatório em toda rota que sirva documento; log de auditoria gravando antes de servir o arquivo, não depois.
