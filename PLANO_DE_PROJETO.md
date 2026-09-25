@@ -64,11 +64,17 @@ Escopo implementado:
 
 **Critério de avanço:** `go test ./...` passando (feito); indexação completa rodada contra a cópia local dos dados reais sem crashar (feito, após corrigir a Armadilha #1 — panic da lib de PDF); **falta**: o usuário abrir o painel no navegador e navegar de verdade (Claude não tem controle de desktop nesta máquina).
 
-### MVP2 — Autenticação + log de auditoria (não iniciada)
+### MVP2 — Autenticação + log de auditoria (implementação concluída em 2026-09-25)
 
 Objetivo: login simples (usuário/senha, hash no SQLite) e registro de acesso a documento (quem, o quê, quando).
 
-**Critério de avanço:** log de acesso gravando de fato para cada documento aberto; sem usuário sem login conseguir chegar em nenhuma página.
+Escopo implementado:
+- Login usuário/senha (bcrypt), sessão via cookie `HttpOnly` (token opaco, 12h fixas, sem renovação — decisão de simplicidade, ver seção 9).
+- Todas as rotas exceto `/login` atrás de `auth.ExigirLogin`; servidor recusa subir sem nenhum usuário cadastrado.
+- `log_acesso` gravado **antes** de servir qualquer documento, fail-closed (se o registro falhar, o arquivo não é servido).
+- Gestão de usuário via CLI (`-criar-usuario`, `-alterar-senha`, senha oculta com confirmação) — sem tela de administração de usuários na web (decisão de escopo: só o dono do escritório cria/gerencia contas, não precisa de UI pra isso ainda).
+
+**Critério de avanço — atingido:** 37 testes passando; validado com o servidor real rodando (login errado rejeitado, login correto aceito, download com log correto no SQLite, acesso sem sessão bloqueado e sem gerar log de auditoria, logout invalidando a sessão).
 
 ### V2 — Alertas e regras de negócio (não iniciada, escopo a refinar)
 
@@ -108,10 +114,13 @@ Ver `SEGURANCA.md`. Certificados digitais estão fora de escopo (ver seção 0) 
 
 1. ~~Instalar Go na máquina de desenvolvimento.~~ Feito (Go 1.27.1, 2026-09-25).
 2. ~~Começar MVP0.~~ Feito e validado contra dados reais (ver "Estado atual" em `CLAUDE.md`).
-3. Começar MVP1 numa sessão dedicada (ideal: logo após `/clear`, lendo `CLAUDE.md` + esta seção 2 deste arquivo) — primeiro passo dessa fase é resolver a pergunta de extração de PDF abaixo.
+3. ~~Começar MVP1.~~ Feito e validado (busca + painel web).
+4. ~~Começar MVP2.~~ Feito e validado (autenticação + auditoria).
+5. Começar V2 (alertas) numa sessão dedicada — primeiro passo é definir o escopo real (ver seção 2), hoje só existe como ideia.
 
 ## 9. Perguntas em aberto (decidir ao longo do caminho)
 
 - ~~**Extração de texto de PDF:**~~ **Decidido em 2026-09-25: `github.com/ledongthuc/pdf`** (puro Go). Testado empiricamente contra amostras reais junto com `pdftotext` (xpdf, o único disponível nesta máquina — vem do Git for Windows, não seria garantido existir na máquina de produção do escritório): os dois extraem texto perfeitamente de PDF "normal" (ex: recibo DEFIS, com acentuação correta), e os dois falham igualmente no PDF de CNPJ da Receita Federal (fonte com codificação quebrada — não é diferença de qualidade entre as ferramentas). Como o resultado é equivalente, venceu a opção sem dependência de binário externo, mantendo o binário único.
-- **Autenticação (MVP2):** usuário/senha simples own-rolled vs. alguma lib de sessão Go padrão. Decidir só ao chegar no MVP2.
-- **Deploy:** binário rodando manualmente vs. serviço Windows (`sc create` / NSSM). Decidir quando o MVP1 estiver validado pelo usuário.
+- ~~**Autenticação (MVP2):**~~ **Decidido em 2026-09-25: usuário/senha own-rolled** (bcrypt + sessão em cookie `HttpOnly` com token opaco validado contra o SQLite, sem lib de sessão externa). Simples o suficiente pro tamanho do projeto; gestão de usuário só via CLI, sem tela de administração — reavaliar só se o número de usuários crescer muito.
+- **Duração de sessão (12h fixas, sem renovação):** decisão simples pro MVP2. Se no uso real isso incomodar (forçar login toda manhã), considerar renovação automática enquanto o usuário estiver ativo — não implementar preventivamente.
+- **Deploy:** binário rodando manualmente (via `START.BAT`) vs. serviço Windows (`sc create` / NSSM, pra já subir com o Windows). Decidir quando o usuário validar o uso diário do painel.

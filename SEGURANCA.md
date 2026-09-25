@@ -45,4 +45,6 @@ Registrar no mínimo: usuário, ação (visualizou/baixou), identificador do doc
 - [x] MVP0: nenhum caminho real de máquina ou nome real de cliente em arquivo versionado (revisado antes do primeiro commit, 2026-09-25).
 - [x] MVP1: `/documentos/{id}/arquivo` só serve documentos que existem na tabela `documentos` (nunca um caminho arbitrário — resolvido a partir do `CaminhoRelativo` gravado pelo indexer, com checagem defensiva de path traversal em `internal/web/web.go`).
 - [x] MVP1: endereço padrão do servidor é `127.0.0.1:8080` (`cmd/painel/main.go`) — nunca `0.0.0.0` por padrão. Configurável via `PAINEL_ENDERECO` só se alguém decidir mudar conscientemente.
-- [ ] MVP2: login obrigatório em toda rota que sirva documento; log de auditoria gravando antes de servir o arquivo, não depois.
+- [x] MVP2: login obrigatório em toda rota que sirva documento (`auth.ExigirLogin` protege tudo exceto `/login`); log de auditoria gravando antes de servir o arquivo, não depois (fail-closed — validado 2026-09-25 conferindo `log_acesso` direto no SQLite após um download real).
+- [x] MVP2: senha nunca gravada em texto puro (bcrypt, `internal/auth/auth.go`); senha de bootstrap via `.env` é opcional e nunca sobrescreve usuário existente.
+- [x] MVP2: acesso sem sessão válida não gera entrada de auditoria nem serve o arquivo (coberto por teste automatizado, `TestArquivoSemLoginNaoServeENaoRegistraAcesso`).

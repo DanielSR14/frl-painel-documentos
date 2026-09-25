@@ -28,6 +28,9 @@
   .trecho { color: #555; font-size: 0.88rem; margin-top: 0.3rem; }
   .vazio { color: #777; font-style: italic; }
   .voltar { display: inline-block; margin-bottom: 1rem; color: #2f6690; text-decoration: none; }
+  .usuario { display: flex; align-items: center; gap: 0.6rem; font-size: 0.9rem; color: #dce6ef; }
+  .botao-link { background: none; border: none; color: #dce6ef; text-decoration: underline; cursor: pointer; font-size: 0.9rem; padding: 0; }
+  .botao-link:hover { color: white; }
 </style>
 </head>
 <body>
@@ -37,6 +40,14 @@
     <input type="text" name="q" placeholder="Buscar empresa ou conteúdo..." value="{{.TermoBusca}}">
     <button type="submit">Buscar</button>
   </form>
+  {{if .NomeUsuario}}
+  <div class="usuario">
+    <span>{{.NomeUsuario}}</span>
+    <form action="/logout" method="post">
+      <button type="submit" class="botao-link">Sair</button>
+    </form>
+  </div>
+  {{end}}
 </header>
 <main>
 {{.Conteudo}}

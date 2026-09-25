@@ -41,18 +41,23 @@ go run ./cmd/painel
 
 # reindexar só metadados, pulando a extração de texto (mais rápido pra iterar)
 go run ./cmd/painel -indexar-somente -pular-busca
+
+# criar o primeiro usuário (obrigatório antes do servidor subir — ver Segurança)
+go build -o painel.exe ./cmd/painel && .\painel.exe -criar-usuario "seu.nome"
+
+# trocar a senha de um usuário existente
+.\painel.exe -alterar-senha "seu.nome"
 ```
 
 ## Arquitetura
 
-Fluxo em três etapas, cada uma um pacote isolado em `internal/`:
+Fluxo em etapas, cada uma um pacote isolado em `internal/`:
 
 1. **Indexer** (`internal/indexer`) — varre a árvore da fonte (pulando pastas `@...` inteiras), extrai metadados (nome da empresa a partir do nome da pasta, tipo de documento por pasta-pai/nome de arquivo, tamanho, datas), grava em SQLite via upsert idempotente (reindexar não duplica; arquivo que sumiu vira soft-delete, ver `internal/store/documentos.go`). Roda via `go run ./cmd/painel` (com ou sem `-indexar-somente`), nunca em resposta direta a uma requisição HTTP.
-2. **Store** (`internal/store`) — única camada que fala com o SQLite (schema, migrations versionadas e embutidas via `embed.FS` em `internal/store/migrations/`, queries, índice FTS5 em `internal/store/busca.go`). Nada fora desse pacote executa SQL direto.
+2. **Store** (`internal/store`) — única camada que fala com o SQLite (schema, migrations versionadas e embutidas via `embed.FS` em `internal/store/migrations/`, queries, índice FTS5 em `internal/store/busca.go`, usuários/sessões/auditoria em `usuarios.go`/`sessoes.go`/`auditoria.go`). Nada fora desse pacote executa SQL direto.
 3. **Search** (`internal/search`) — extrai texto de PDF (`github.com/ledongthuc/pdf`, puro Go) e grava no índice FTS5 via `store`. `IndexarPendentes` roda em paralelo (worker pool) só sobre documentos ainda não indexados para busca (`store.DocumentosPdfPendentesDeBusca`) — não reprocessa tudo a cada execução.
-4. **Web** (`internal/web`) — handlers HTTP (`net/http` puro, `ServeMux` com padrões de método+path do Go 1.22+), templates server-side embutidos via `embed.FS` (`internal/web/templates/*.html`). Sem SPA, sem build step de JS, sem framework — combina com a filosofia de "binário único, sem dependência de runtime". Ainda sem autenticação (MVP2).
-
-A partir do MVP2 (autenticação + auditoria) entra um quinto pacote, `internal/auth`, responsável por login, sessão e o log de acesso a documentos.
+4. **Auth** (`internal/auth`) — login (bcrypt), sessão (token opaco em cookie `HttpOnly`, validado contra `store`, expira em 12h fixas), middleware `ExigirLogin` que protege qualquer handler. Log de auditoria em si vive no `store` (`RegistrarAcesso`), chamado pelo `web` antes de servir um documento.
+5. **Web** (`internal/web`) — handlers HTTP (`net/http` puro, `ServeMux` com padrões de método+path do Go 1.22+), templates server-side embutidos via `embed.FS` (`internal/web/templates/*.html`). Sem SPA, sem build step de JS, sem framework. Todas as rotas exceto `/login` ficam atrás de `auth.ExigirLogin`.
 
 ## Estrutura de pastas
 
@@ -62,10 +67,10 @@ FRL_Painel_Documentos/
 │   └── painel/                  main.go — ponto de entrada único do binário
 ├── internal/
 │   ├── indexer/                  varredura da fonte + extração de metadados
-│   ├── store/                     acesso a SQLite (schema, migrations, queries, FTS5)
+│   ├── store/                     acesso a SQLite (schema, migrations, queries, FTS5, usuários/sessões/auditoria)
 │   ├── search/                    extração de texto de PDF + orquestração da indexação de busca
-│   ├── web/                       handlers HTTP + templates (embutidos, internal/web/templates/)
-│   └── auth/                      login, sessão, log de auditoria (a partir do MVP2 — não existe ainda)
+│   ├── auth/                      login, sessão, middleware de autenticação
+│   └── web/                       handlers HTTP + templates (embutidos, internal/web/templates/)
 ├── testdata/                       fixtures sintéticas para teste (nunca dado real de cliente)
 ├── data/                            SQLite do projeto (gitignored) — nunca os documentos originais
 ├── CLAUDE.md
@@ -94,11 +99,15 @@ Existem hoje (MVP0 concluído): `cmd/painel/`, `internal/indexer/`, `internal/st
 1. **`github.com/ledongthuc/pdf` pode dar `panic`, não só devolver `error`, ao processar um PDF real malformado** (descoberto rodando `search.IndexarPendentes` contra os ~24 mil PDFs reais em 2026-09-25 — `panic: loading {5 0}: found {4 0}`, dentro de `Reader.NumPage` → `Value.Key` → `resolve`). Um arquivo problemático não pode derrubar o lote inteiro. **Toda chamada a `ExtrairTexto` dentro de um processamento em lote precisa passar por `recover()`** — já feito em `internal/search/orquestrador.go` (`extrairComRecuperacao`). Se algum código novo chamar `search.ExtrairTexto` fora desse orquestrador (ex: um handler HTTP futuro que extraia sob demanda), replicar o mesmo `recover()`, não assumir que a função só retorna erro normal.
 2. **PDFs de CNPJ emitidos pela Receita Federal têm uma fonte com codificação que nenhum extrator de texto decodifica corretamente** (testado com `pdftotext`/xpdf e com `ledongthuc/pdf` — os dois produzem texto ilegível pro mesmo tipo de arquivo). Não é bug deste projeto, é uma limitação do PDF de origem. Efeito prático: a busca por CNPJ via conteúdo de documento não vai funcionar bem justamente no documento onde o CNPJ é mais autoritativo — o nome da pasta/empresa continua sendo o caminho confiável de busca por enquanto.
 3. **Chamar um `.exe` da pasta atual sem prefixo (`painel.exe`) falha em `cmd.exe` nesta máquina** — `'painel.exe' não é reconhecido como um comando interno` (validado testando `START.BAT`, 2026-09-25), provavelmente por causa de alguma política de segurança que desativa a busca implícita no diretório atual (`NoDefaultCurrentDirectoryInExePath` ou equivalente). **Sempre referenciar um executável local com `.\` explícito** (`.\painel.exe`, nunca `painel.exe` sozinho) em qualquer script `.bat` deste projeto — não assumir que o comportamento padrão do `cmd.exe` de buscar no diretório atual está sempre ativo.
+4. **`modernc.org/sqlite` grava `time.Time` como texto RFC3339 com o offset local (ex: `...-03:00`), enquanto `CURRENT_TIMESTAMP` do SQLite é sempre UTC sem offset (`YYYY-MM-DD HH:MM:SS`)** — comparar as duas colunas como texto (`WHERE expira_em > CURRENT_TIMESTAMP`, por exemplo) dá resultado errado sempre que o horário local não é UTC, porque a comparação lexicográfica não é cronológica entre formatos diferentes (confirmado empiricamente: um horário 1h no futuro em `-03:00` comparou como "menor" que `CURRENT_TIMESTAMP`, 2026-09-25, ao implementar sessões do MVP2). **Toda função do `internal/store` que recebe um `time.Time` pra gravar ou comparar contra uma coluna `DATETIME` deve chamar `.UTC()` nele antes de usar** — feito em `CriarSessao`, `UpsertDocumento` e `MarcarAusentesComoRemovidos`. Não confiar que o chamador já converteu; normalizar dentro do `store` mesmo (defesa em profundidade — é exatamente esse tipo de "esqueci de converter num lugar" que causou o bug).
+5. **Criar um `*bufio.Reader` novo a cada leitura da mesma stream (`os.Stdin`) descarta dado já bufferizado internamente pela instância anterior.** Descoberto implementando `-criar-usuario` (pede a senha duas vezes): com a senha vindo por pipe (`printf 'a\nb\n' | painel.exe ...`), a primeira chamada a `bufio.NewReader(os.Stdin).ReadString('\n')` lê o pipe inteiro pro buffer interno dela mas devolve só a primeira linha; criar um **novo** `bufio.Reader` pra ler a segunda linha começa com buffer vazio e não sobra mais nada no pipe pra ler → `EOF` imediato, mesmo com dado "disponível" (já consumido pelo primeiro reader). **Sempre criar um único `*bufio.Reader` por stream e reaproveitar entre leituras sucessivas** — nunca `bufio.NewReader(os.Stdin)` de novo a cada prompt. Ver `cmd/painel/main.go`, `lerSenhaComConfirmacao`.
 
 ## Segurança — resumo (ver `SEGURANCA.md` para o checklist completo)
 
-- Roda **só na rede local do escritório**. Nunca exposto à internet, nunca atrás de um túnel/proxy público.
+- Roda **só na rede local do escritório**. Nunca exposto à internet, nunca atrás de um túnel/proxy público — o login não tem HTTPS nem proteção contra força bruta.
 - Certificados digitais (`.pfx`/`.p12`) estão **fora do escopo deste projeto** — outra aplicação do escritório já cuida disso. O indexer nem cataloga o nome desses arquivos.
+- Todo acesso a documento é logado **antes** de servir o arquivo (`internal/web/web.go`, `handleArquivo`) — se `RegistrarAcesso` falhar, o arquivo não é servido (fail closed).
+- Sem usuário cadastrado, o servidor não sobe (`cmd/painel` sai com erro claro pedindo `-criar-usuario`) — nunca existe um "modo sem login" por omissão.
 
 ## Fluxo de trabalho entre sessões (gestão de contexto)
 
@@ -109,22 +118,21 @@ Este projeto é dividido em fases pequenas e sequenciais (ver `PLANO_DE_PROJETO.
 3. **Antes de considerar uma fase encerrada**: atualizar a seção "Estado atual" deste arquivo (o que foi feito, decisões tomadas, testes passando) e marcar a fase como concluída em `PLANO_DE_PROJETO.md`, com data. Só depois disso é seguro rodar `/clear`.
 4. Armadilhas novas descobertas no caminho entram na seção "Armadilhas conhecidas" acima, não se perdem numa conversa que vai ser limpa.
 
-## Estado atual (MVP1 — Busca + painel web, implementação concluída em 2026-09-25)
+## Estado atual (MVP2 — Autenticação + auditoria, implementação concluída em 2026-09-25)
 
-**Fase 0** completa: documentação, `go.mod`, `.gitignore`, `.env`/`.env.example`. Go 1.27.1 instalado.
+**Fase 0, MVP0 e MVP1 completos.** Ver histórico de commits e `PLANO_DE_PROJETO.md` seção 2 pra detalhe de cada um — não repetir aqui pra manter este arquivo enxuto. Resumo: indexer de metadados (`internal/indexer`+`internal/store`), extração de texto + busca FTS5 (`internal/search`+`internal/store/busca.go`), painel web (`internal/web`) com lista/detalhe/busca/download.
 
-**MVP0 completo** (indexer de metadados): `internal/store` (schema `empresas`/`documentos`, migrations embutidas, upsert idempotente, soft-delete) + `internal/indexer` (varredura, pula `@...`, ignora certificado/lixo legado, infere `tipo_documento`). Ver histórico de commits pra detalhe — não repetir aqui pra manter este arquivo enxuto.
+**MVP2 completo:**
+- `internal/store`: tabelas `usuarios`, `sessoes`, `log_acesso` (migration `0003_auth.sql`).
+- `internal/auth`: `Autenticar` (bcrypt), `CriarUsuario`/`AlterarSenha`/`GarantirUsuarioInicial`, sessão via token opaco (12h fixas, sem renovação), middleware `ExigirLogin` (injeta `InfoUsuario` no contexto via `UsuarioDoContexto`).
+- `internal/web`: `/login` (GET/POST) e `/logout` (POST) públicos; todo o resto atrás de `ExigirLogin`. `handleArquivo` chama `RegistrarAcesso` **antes** de servir o arquivo, fail-closed se falhar. Header mostra usuário logado + botão Sair.
+- `cmd/painel`: `-criar-usuario NOME` e `-alterar-senha NOME` (senha lida via `golang.org/x/term`, oculta, com confirmação). Bootstrap opcional via `.env` (`PAINEL_USUARIO_INICIAL`/`PAINEL_SENHA_INICIAL`) só se não houver nenhum usuário ainda. Servidor recusa subir sem nenhum usuário cadastrado.
+- **37 testes automatizados passando** (`go test ./...`) em 5 pacotes, incluindo fluxo completo de login/logout, bloqueio de rota sem sessão, e confirmação de que acesso não autenticado não gera entrada de auditoria.
+- **Validado de ponta a ponta contra o servidor real rodando** (não só testes automatizados): criar usuário via CLI, login com senha errada (rejeitado) e correta (aceito), acesso à home e a uma empresa, download de PDF real com registro correto no `log_acesso` (conferido direto no SQLite), acesso sem cookie bloqueado e sem gerar log, logout invalidando a sessão.
+- **Dois bugs reais encontrados e corrigidos durante essa validação** (ver Armadilhas conhecidas #4 e #5): comparação de data quebrada por fuso horário no SQLite, e `bufio.Reader` novo por leitura descartando dado bufferizado no prompt de senha.
 
-**MVP1 completo:**
-- `internal/search`: `ExtrairTexto` (via `github.com/ledongthuc/pdf`, puro Go) + `IndexarPendentes` (orquestração paralela, incremental, com callback de progresso — ver Armadilha #1 sobre o `recover()` obrigatório).
-- `internal/store/busca.go`: índice FTS5 (`documentos_busca`, migration `0002_busca_fts.sql`), `Buscar`, `BuscarEmpresasPorNome`, `ObterDocumento`/`ObterEmpresa`.
-- `internal/web`: painel HTTP completo (`/`, `/empresas/{id}`, `/busca`, `/documentos/{id}/arquivo`), templates embutidos, sem autenticação (por enquanto só rede local).
-- `cmd/painel`: por padrão indexa metadados + extrai texto + sobe o servidor em `127.0.0.1:8080`. Flags `-indexar-somente` e `-pular-busca` disponíveis.
-- **21 testes automatizados passando** (`go test ./...`) em 4 pacotes, incluindo os 5 handlers HTTP principais e uma regressão específica pro panic da lib de PDF (`internal/search/orquestrador_test.go`).
-- **Validado de ponta a ponta contra os dados reais** (cópia local): indexação de metadados (430 empresas, 24.042 documentos) + extração de texto de 20.215 PDFs (16.378 com texto, 1.153 sem texto/escaneado, 2.684 erros — não investigado a fundo, não bloqueia) rodando sem crashar, em ~13min30s no total. Servidor subido de verdade e testado via `curl`: lista de empresas, página de empresa com documentos agrupados por tipo, busca por nome e por conteúdo, download de PDF real com `Content-Type` correto — todos funcionando.
+**Pendência real:** um usuário de teste criado durante a validação ficou cadastrado no `data/painel.db` local (gitignored, nunca commitado) com uma senha fraca de teste — trocar a senha (`.\painel.exe -alterar-senha <nome>`) antes de usar o painel de verdade no dia a dia. Não repetir a senha de teste aqui nem em nenhum outro arquivo versionado, mesmo sendo só local.
 
-**Pendência real:** a extração de texto de 20 mil PDFs demora ~13 minutos numa execução completa (aceitável pra um job batch periódico, mas incremental nas próximas execuções — só reprocessa o que for novo). Os 2.684 erros de extração não foram categorizados um a um; se isso importar no futuro, seria um bom próximo passo de investigação, não um bloqueio de fase.
+**Falta pro MVP2 ser considerado 100% fechado:** o usuário abrir o painel no navegador e testar o fluxo de login/logout de verdade (Claude validou via `curl` + consulta direta ao SQLite, não tem controle de desktop nesta máquina).
 
-**Falta pro MVP1 ser considerado 100% fechado:** o usuário abrir o painel no navegador e navegar de verdade (Claude só validou via `curl`, não tem controle de desktop nesta máquina).
-
-**Próximo passo:** MVP2 — autenticação + log de auditoria (ver `PLANO_DE_PROJETO.md` seção 2).
+**Próximo passo:** V2 — alertas e regras de negócio (escopo ainda a refinar, ver `PLANO_DE_PROJETO.md` seção 2).

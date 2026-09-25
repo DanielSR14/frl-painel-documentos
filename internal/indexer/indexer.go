@@ -91,7 +91,7 @@ func Run(fonte string, st *store.Store) (Resumo, error) {
 				Extensao:        ext,
 				TipoDocumento:   tipo,
 				TamanhoBytes:    info.Size(),
-				ModificadoEm:    info.ModTime(),
+				ModificadoEm:    info.ModTime().UTC(),
 				IndexadoEm:      inicioExecucao,
 			}
 			if err := st.UpsertDocumento(doc); err != nil {

@@ -1,7 +1,8 @@
-// Package web serve o painel read-only do MVP1: lista de empresas, busca e
-// visualização de documento. Sem autenticação ainda (chega no MVP2) — por
-// isso este servidor só deve fazer bind em endereço de rede local, nunca
-// "0.0.0.0" (ver SEGURANCA.md).
+// Package web serve o painel: lista de empresas, busca e visualização de
+// documento, atrás de login (MVP2). Mesmo com login, este servidor só deve
+// fazer bind em endereço de rede local, nunca "0.0.0.0" (ver SEGURANCA.md)
+// — não foi hardenizado contra exposição direta à internet (sem HTTPS, sem
+// rate limiting de login).
 package web
 
 import (
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"frl-painel-documentos/internal/auth"
 	"frl-painel-documentos/internal/store"
 )
 
@@ -29,16 +31,57 @@ type Servidor struct {
 }
 
 func NovoServidor(st *store.Store, fonte string) *Servidor {
-	s := &Servidor{st: st, fonte: fonte, mux: http.NewServeMux()}
-	s.mux.HandleFunc("GET /{$}", s.handleEmpresas)
-	s.mux.HandleFunc("GET /empresas/{id}", s.handleEmpresa)
-	s.mux.HandleFunc("GET /documentos/{id}/arquivo", s.handleArquivo)
-	s.mux.HandleFunc("GET /busca", s.handleBusca)
+	s := &Servidor{st: st, fonte: fonte}
+
+	protegido := http.NewServeMux()
+	protegido.HandleFunc("GET /{$}", s.handleEmpresas)
+	protegido.HandleFunc("GET /empresas/{id}", s.handleEmpresa)
+	protegido.HandleFunc("GET /documentos/{id}/arquivo", s.handleArquivo)
+	protegido.HandleFunc("GET /busca", s.handleBusca)
+	protegido.HandleFunc("POST /logout", s.handleLogout)
+
+	raiz := http.NewServeMux()
+	raiz.HandleFunc("GET /login", s.handleLoginForm)
+	raiz.HandleFunc("POST /login", s.handleLoginSubmit)
+	raiz.Handle("/", auth.ExigirLogin(st, protegido))
+
+	s.mux = raiz
 	return s
 }
 
 func (s *Servidor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Servidor) handleLoginForm(w http.ResponseWriter, r *http.Request) {
+	erro := r.URL.Query().Get("erro") == "1"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := templates.ExecuteTemplate(w, "login.html", map[string]any{"Erro": erro}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Servidor) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/login?erro=1", http.StatusSeeOther)
+		return
+	}
+
+	token, err := auth.Autenticar(s.st, r.FormValue("nome_usuario"), r.FormValue("senha"))
+	if err != nil {
+		http.Redirect(w, r, "/login?erro=1", http.StatusSeeOther)
+		return
+	}
+	auth.DefinirCookieSessao(w, token)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Servidor) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(auth.NomeCookie); err == nil {
+		_ = s.st.ApagarSessao(cookie.Value) // best-effort — mesmo se falhar, o cookie é limpo abaixo
+	}
+	auth.LimparCookieSessao(w)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 func (s *Servidor) handleEmpresas(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +90,7 @@ func (s *Servidor) handleEmpresas(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "erro ao listar empresas", http.StatusInternalServerError)
 		return
 	}
-	renderizar(w, "empresas.html", map[string]any{"Empresas": empresas}, "")
+	renderizar(w, r, "empresas.html", map[string]any{"Empresas": empresas}, "")
 }
 
 type grupoDocumentos struct {
@@ -74,7 +117,7 @@ func (s *Servidor) handleEmpresa(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderizar(w, "empresa.html", map[string]any{
+	renderizar(w, r, "empresa.html", map[string]any{
 		"Empresa":          empresa,
 		"GruposDocumentos": agruparPorTipo(documentos),
 	}, "")
@@ -124,6 +167,16 @@ func (s *Servidor) handleArquivo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log de auditoria ANTES de servir o arquivo, nunca depois (ver
+	// SEGURANCA.md) — se não der pra registrar o acesso, não servimos o
+	// documento. A rota já está atrás de ExigirLogin, então o usuário
+	// sempre está presente no contexto aqui.
+	usuario, _ := auth.UsuarioDoContexto(r)
+	if err := s.st.RegistrarAcesso(usuario.ID, doc.ID); err != nil {
+		http.Error(w, "erro ao registrar acesso", http.StatusInternalServerError)
+		return
+	}
+
 	http.ServeFile(w, r, caminhoAbsoluto)
 }
 
@@ -136,7 +189,7 @@ type resultadoBuscaView struct {
 func (s *Servidor) handleBusca(w http.ResponseWriter, r *http.Request) {
 	termo := strings.TrimSpace(r.URL.Query().Get("q"))
 	if termo == "" {
-		renderizar(w, "busca.html", map[string]any{
+		renderizar(w, r, "busca.html", map[string]any{
 			"Empresas":   []store.Empresa{},
 			"Resultados": []resultadoBuscaView{},
 		}, "")
@@ -160,8 +213,8 @@ func (s *Servidor) handleBusca(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resultados := make([]resultadoBuscaView, 0, len(brutos))
-	for _, r := range brutos {
-		doc, err := s.st.ObterDocumento(r.DocumentoID)
+	for _, res := range brutos {
+		doc, err := s.st.ObterDocumento(res.DocumentoID)
 		if err != nil {
 			continue
 		}
@@ -169,27 +222,30 @@ func (s *Servidor) handleBusca(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		resultados = append(resultados, resultadoBuscaView{Documento: doc, Empresa: empresa, Trecho: r.Trecho})
+		resultados = append(resultados, resultadoBuscaView{Documento: doc, Empresa: empresa, Trecho: res.Trecho})
 	}
 
-	renderizar(w, "busca.html", map[string]any{
+	renderizar(w, r, "busca.html", map[string]any{
 		"TermoBusca": termo,
 		"Empresas":   empresas,
 		"Resultados": resultados,
 	}, termo)
 }
 
-func renderizar(w http.ResponseWriter, nomeConteudo string, dados map[string]any, termoBusca string) {
+func renderizar(w http.ResponseWriter, r *http.Request, nomeConteudo string, dados map[string]any, termoBusca string) {
 	var buf bytes.Buffer
 	if err := templates.ExecuteTemplate(&buf, nomeConteudo, dados); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	usuario, _ := auth.UsuarioDoContexto(r)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	err := templates.ExecuteTemplate(w, "layout.html", map[string]any{
-		"Conteudo":   template.HTML(buf.String()), //nolint:gosec // buf vem só dos nossos templates, já auto-escapados na primeira renderização
-		"TermoBusca": termoBusca,
+		"Conteudo":    template.HTML(buf.String()), //nolint:gosec // buf vem só dos nossos templates, já auto-escapados na primeira renderização
+		"TermoBusca":  termoBusca,
+		"NomeUsuario": usuario.NomeUsuario,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

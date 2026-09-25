@@ -21,8 +21,12 @@ func (s *Store) UpsertDocumento(d Documento) error {
 			indexado_em = excluded.indexado_em,
 			removido_em = NULL
 	`,
+		// .UTC() nos dois: o driver grava time.Time como texto com offset
+		// local, e comparações posteriores (MarcarAusentesComoRemovidos,
+		// ordenação) tratam essas colunas como texto UTC — ver Armadilha
+		// conhecida em CLAUDE.md e o comentário em store/sessoes.go.
 		d.EmpresaID, d.NomeArquivo, d.CaminhoRelativo, d.Extensao,
-		d.TipoDocumento, d.TamanhoBytes, d.ModificadoEm, d.IndexadoEm,
+		d.TipoDocumento, d.TamanhoBytes, d.ModificadoEm.UTC(), d.IndexadoEm.UTC(),
 	)
 	return err
 }
@@ -37,7 +41,7 @@ func (s *Store) MarcarAusentesComoRemovidos(inicioExecucao time.Time) (int64, er
 		UPDATE documentos
 		SET removido_em = CURRENT_TIMESTAMP
 		WHERE indexado_em < ? AND removido_em IS NULL
-	`, inicioExecucao)
+	`, inicioExecucao.UTC())
 	if err != nil {
 		return 0, err
 	}

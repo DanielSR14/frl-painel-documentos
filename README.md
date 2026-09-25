@@ -7,13 +7,12 @@ Veja o plano completo do projeto em [`PLANO_DE_PROJETO.md`](PLANO_DE_PROJETO.md)
 ## Estrutura (ver `CLAUDE.md` para o estado real de cada pasta)
 
 ```
-cmd/painel/       ponto de entrada do binário (existe)
-internal/indexer/ varredura da fonte + extração de metadados (existe — MVP0)
-internal/store/    acesso a SQLite (existe — MVP0)
-internal/search/   extração de texto de PDF + índice FTS5 (a partir do MVP1)
-internal/web/      handlers HTTP, templates (a partir do MVP1)
-internal/auth/     login e log de auditoria (a partir do MVP2)
-web/               templates HTML e estáticos (a partir do MVP1)
+cmd/painel/       ponto de entrada do binário
+internal/indexer/ varredura da fonte + extração de metadados
+internal/store/    acesso a SQLite (schema, FTS5, usuários, sessões, auditoria)
+internal/search/   extração de texto de PDF + orquestração da busca
+internal/auth/     login, sessão, middleware de autenticação
+internal/web/      handlers HTTP + templates embutidos
 testdata/          fixtures sintéticas para teste (nunca dado real)
 ```
 
@@ -23,7 +22,14 @@ testdata/          fixtures sintéticas para teste (nunca dado real)
 
 Jeito mais simples: dar duplo clique em **`START.BAT`** (ou rodar pelo terminal). Ele copia o `.env.example` pra `.env` na primeira vez (e abre pra você editar o caminho da fonte), compila e sobe o painel em `http://127.0.0.1:8080`.
 
-Manualmente:
+**Antes do primeiro uso, é preciso criar um usuário** (o painel exige login desde o MVP2 — não existe modo sem login):
+
+```powershell
+go build -o painel.exe ./cmd/painel
+.\painel.exe -criar-usuario "seu.nome"
+```
+
+Manualmente (build/test/indexação):
 
 ```powershell
 go build ./...
