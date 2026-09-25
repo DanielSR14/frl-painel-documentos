@@ -1,0 +1,26 @@
+# binários compilados
+/bin/
+/dist/
+*.exe
+*.test
+
+# SQLite do projeto (metadado, não é fonte de documentos)
+/data/*.db
+/data/*.db-journal
+/data/*.db-wal
+/data/*.db-shm
+
+# nunca versionar nada que pareça certificado digital, mesmo em teste
+*.pfx
+*.p12
+
+# config local por máquina (caminho da fonte de dados, segredos)
+.env
+config.local.*
+
+# Go
+/vendor/
+
+# editor
+.vscode/
+.idea/
